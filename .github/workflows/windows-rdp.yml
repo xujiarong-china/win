@@ -10,54 +10,54 @@ jobs:
 
     steps:
       - name: 0. Install Chinese Language Pack (zh-CN)
-        # 必须用 Windows PowerShell 5.1：windows-2022 的默认 shell 是 pwsh 7，
-        # 而 New-WinUserLanguageList 返回 WinRT 对象，在 .NET Core 下会报
-        # "Cannot marshal 'parameter #1': Invalid managed/unmanaged type combination"
+        # Windows PowerShell 5.1 is required: New-WinUserLanguageList returns a WinRT object
+        # that pwsh 7 (.NET Core) cannot marshal ("Cannot marshal 'parameter #1'").
+        # Keep this script ASCII-only: GitHub writes run blocks as UTF-8 without BOM and
+        # 5.1 parses .ps1 as ANSI, which corrupts non-ASCII and breaks the parser.
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          # 优先：Windows 11 / Server 2022 的 LanguagePackManagement 模块，一步装好并复制到系统设置
+          # Try LanguagePackManagement first (Windows 11 / Server 2022)
           $installed = $false
           if (Get-Command Install-Language -ErrorAction SilentlyContinue) {
               try {
                   Install-Language -Language zh-CN -CopyToSettings
                   $installed = $true
-                  Write-Host "Install-Language zh-CN 完成。"
+                  Write-Host "Install-Language zh-CN finished."
               } catch {
-                  Write-Host "Install-Language 失败，改用按需功能安装：$($_.Exception.Message)"
+                  Write-Host "Install-Language failed, falling back to Features on Demand: $($_.Exception.Message)"
               }
           }
 
-          # 退路：用 Windows 按需功能（FoD）安装中文语言基础包与中文字体
+          # Fallback: install basic language pack and Hans fonts as Features on Demand
           if (-not $installed) {
               foreach ($cap in @("Language.Basic~~~zh-CN~0.0.1.0", "Language.Fonts.Hans~~~und-HANS~0.0.1.0")) {
                   try {
-                      Write-Host "正在安装 $cap ..."
+                      Write-Host "Installing $cap ..."
                       Add-WindowsCapability -Online -Name $cap | Out-Null
                       $installed = $true
                   } catch {
-                      Write-Host "安装 $cap 失败：$($_.Exception.Message)"
+                      Write-Host "Installing $cap failed: $($_.Exception.Message)"
                   }
               }
           }
 
-          # 把当前用户的界面语言、区域格式同步到欢迎屏幕与新建用户（NvdAdmin 在后一步创建，会继承）
-          # 每项单独 try/catch：个别 API 在精简镜像上缺失时不至于整步失败
-          try { Set-WinUserLanguageList -LanguageList (New-WinUserLanguageList -Language zh-CN) -Force } catch { Write-Warning "Set-WinUserLanguageList 失败：$($_.Exception.Message)" }
-          try { Set-WinUILanguageOverride -Language zh-CN } catch { Write-Warning "Set-WinUILanguageOverride 失败：$($_.Exception.Message)" }
-          try { Set-Culture -CultureInfo zh-CN } catch { Write-Warning "Set-Culture 失败：$($_.Exception.Message)" }
-          try { Copy-UserInternationalSettingsToSystem -WelcomeScreen $true -NewUser $true } catch { Write-Warning "Copy-UserInternationalSettingsToSystem 失败：$($_.Exception.Message)" }
+          # Apply UI language and culture to current user, welcome screen and new users
+          # (NvdAdmin is created later and inherits the default profile settings)
+          try { Set-WinUserLanguageList -LanguageList (New-WinUserLanguageList -Language zh-CN) -Force } catch { Write-Warning "Set-WinUserLanguageList failed: $($_.Exception.Message)" }
+          try { Set-WinUILanguageOverride -Language zh-CN } catch { Write-Warning "Set-WinUILanguageOverride failed: $($_.Exception.Message)" }
+          try { Set-Culture -CultureInfo zh-CN } catch { Write-Warning "Set-Culture failed: $($_.Exception.Message)" }
+          try { Copy-UserInternationalSettingsToSystem -WelcomeScreen $true -NewUser $true } catch { Write-Warning "Copy-UserInternationalSettingsToSystem failed: $($_.Exception.Message)" }
 
-          # 校验：没装上就明确报错，避免出现"英文系统却显示已就绪"
-          # 注意：Get-WinUILanguageOverride 才是判据；Get-InstalledLanguage 在这个镜像上可能不存在
+          # Verify: fail loudly instead of reporting READY on an English desktop
           if (Get-Command Get-InstalledLanguage -ErrorAction SilentlyContinue) {
-              Write-Host "已安装语言：$(((Get-InstalledLanguage).LanguageId) -join ', ')"
+              Write-Host "Installed languages: $(((Get-InstalledLanguage).LanguageId) -join ', ')"
           }
           $ui = Get-WinUILanguageOverride
-          Write-Host "界面语言覆盖：$($ui.Name)"
+          Write-Host "UI language override: $($ui.Name)"
           if (-not $ui -or $ui.Name -ne "zh-CN") {
-              throw "界面语言未能设为 zh-CN：请确认中文语言包已安装，或镜像本身不支持 zh-CN。"
+              throw "UI language override is not zh-CN. Verify the zh-CN language pack is available on this image."
           }
 
       - name: 1. Enable Remote Desktop & Firewall
