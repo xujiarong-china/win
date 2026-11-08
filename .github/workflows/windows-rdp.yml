@@ -9,6 +9,49 @@ jobs:
     timeout-minutes: 360
 
     steps:
+      - name: 0. Install Chinese Language Pack (zh-CN)
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # 优先：Windows 11 / Server 2022 的 LanguagePackManagement 模块，一步装好并复制到系统设置
+          $installed = $false
+          if (Get-Command Install-Language -ErrorAction SilentlyContinue) {
+              try {
+                  Install-Language -Language zh-CN -CopyToSettings
+                  $installed = $true
+                  Write-Host "Install-Language zh-CN 完成。"
+              } catch {
+                  Write-Host "Install-Language 失败，改用按需功能安装：$($_.Exception.Message)"
+              }
+          }
+
+          # 退路：用 Windows 按需功能（FoD）安装中文语言基础包与中文字体
+          if (-not $installed) {
+              foreach ($cap in @("Language.Basic~~~zh-CN~0.0.1.0", "Language.Fonts.Hans~~~und-HANS~0.0.1.0")) {
+                  try {
+                      Write-Host "正在安装 $cap ..."
+                      Add-WindowsCapability -Online -Name $cap | Out-Null
+                      $installed = $true
+                  } catch {
+                      Write-Host "安装 $cap 失败：$($_.Exception.Message)"
+                  }
+              }
+          }
+
+          # 把当前用户的界面语言、区域格式同步到欢迎屏幕与新建用户（NvdAdmin 在后一步创建，会继承）
+          Set-WinUserLanguageList -LanguageList (New-WinUserLanguageList -Language zh-CN) -Force
+          Set-WinUILanguageOverride -Language zh-CN
+          Set-Culture -CultureInfo zh-CN
+          Copy-UserInternationalSettingsToSystem -WelcomeScreen $true -NewUser $true
+
+          # 校验：没装上就明确报错，避免出现"英文系统却显示已就绪"
+          if (Get-Command Get-InstalledLanguage -ErrorAction SilentlyContinue) {
+              $ids = (Get-InstalledLanguage).LanguageId
+              Write-Host "已安装语言：$($ids -join ', ')"
+              if ($ids -notcontains "zh-CN") { throw "zh-CN 语言包未安装成功：镜像可能不支持该语言包，请检查 Windows Update。" }
+          }
+          Write-Host "界面语言覆盖：$((Get-WinUILanguageOverride).Name)"
+
       - name: 1. Enable Remote Desktop & Firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
@@ -17,10 +60,11 @@ jobs:
 
       - name: 2. Create Admin Account
         run: |
-          $Password = ConvertTo-SecureString "1234" -AsPlainText -Force
-          New-LocalUser -Name "1" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "1" -ErrorAction SilentlyContinue
-          net user runneradmin 1234
+          $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
+          New-LocalUser -Name "NvdAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
+          net user runneradmin P@ssw0rd1qazXSW@#
+
       - name: 3. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
@@ -42,8 +86,8 @@ jobs:
           Write-Host "==========================================" -ForegroundColor Green
           Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
           Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Username     : 1" -ForegroundColor Yellow
-          Write-Host "  Password     : 1234" -ForegroundColor Yellow
+          Write-Host "  Username     : NvdAdmin" -ForegroundColor Yellow
+          Write-Host "  Password     : P@ssw0rd1qazXSW@#" -ForegroundColor Yellow
           Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
           Write-Host "==========================================" -ForegroundColor Green
 
