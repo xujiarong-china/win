@@ -79,16 +79,37 @@ jobs:
         run: |
           # Download and install Tailscale silently
           Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
-          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+          $msi = Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait -PassThru
+          if ($msi.ExitCode -ne 0) { throw "Tailscale MSI install failed, msiexec exit code $($msi.ExitCode)" }
+
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          for ($i = 1; $i -le 30 -and -not (Test-Path $ts); $i++) { Start-Sleep -Seconds 2 }
+          if (-not (Test-Path $ts)) { throw "tailscale.exe not found at $ts after install" }
 
           # Connect to Tailscale network
-          Start-Sleep -Seconds 5
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
+          & $ts up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server" --timeout=120s
+          $upExit = $LASTEXITCODE
+          if ($upExit -ne 0) {
+              Write-Host "----- tailscale status -----"
+              & $ts status
+              Write-Host "----------------------------"
+              throw "tailscale up failed, exit code $upExit (see status above: bad/expired key, or node awaiting approval)"
+          }
 
-          Start-Sleep -Seconds 8
-
-          # Get Tailscale IP
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+          # Wait until a Tailscale IPv4 address is actually assigned
+          # (the old fixed 8s sleep was the reason the banner could show an empty IP)
+          $ts_ip = $null
+          for ($i = 1; $i -le 90; $i++) {
+              $ts_ip = & $ts ip -4 2>$null | Select-Object -First 1
+              if ($ts_ip) { break }
+              Start-Sleep -Seconds 2
+          }
+          if (-not $ts_ip) {
+              Write-Host "----- tailscale status -----"
+              & $ts status
+              Write-Host "----------------------------"
+              throw "No Tailscale IPv4 address was assigned within 180s; status printed above."
+          }
 
           Write-Host ""
           Write-Host "==========================================" -ForegroundColor Green
